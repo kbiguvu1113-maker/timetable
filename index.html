@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Coaching Centre Timetable</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-auth-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-firestore-compat.min.js"></script>
+<style>
+:root{--ink:#1b2a41;--bg:#f4f2ec;--card:#fff;--line:#d8d4c6;--acc:#0f766e;--warn:#b45309;--bad:#b91c1c;--mut:#667085}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--ink);color:#fff;padding:10px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+header h1{font-size:18px;margin:0;flex:1}header span{font-size:12px;opacity:.85}
+nav{display:flex;gap:4px;flex-wrap:wrap;padding:10px 12px 0}
+nav button{border:1px solid var(--line);background:#fff;border-radius:6px 6px 0 0;padding:7px 11px;cursor:pointer}
+nav button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+main{padding:12px}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:12px}
+h2{font-size:16px;margin:0 0 8px}h3{font-size:14px;margin:12px 0 6px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}.row>label{display:flex;flex-direction:column;font-size:12px;color:var(--mut);gap:2px}
+input,select{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);min-width:130px}
+button{font:inherit;padding:6px 11px;border-radius:6px;border:1px solid var(--line);background:#fff;cursor:pointer}
+button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button.d{color:var(--bad)}
+.pills{display:flex;gap:6px;flex-wrap:wrap}.pills label{flex-direction:row;align-items:center;gap:4px;border:1px solid var(--line);border-radius:14px;padding:2px 9px;font-size:13px;color:var(--ink)}
+.pills input{min-width:0}.sc{overflow-x:auto}table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:5px 7px;text-align:left;vertical-align:top}th{background:#ece9dd}
+.gt td,.gt th{text-align:center;font-size:12px}.gt td.l{text-align:left}.mut{color:var(--mut)}.err{background:#fef2f2;border-left:4px solid var(--bad);padding:8px 10px;margin:10px 0;border-radius:4px}
+.ok{background:#ecfdf5;border-left:4px solid var(--acc);padding:8px 10px;margin:10px 0}.dt{background:var(--ink);color:#fff;padding:6px 10px;border-radius:5px}
+.lock{max-width:420px;margin:50px auto}.lock input{width:100%;margin-bottom:8px}dialog{border:1px solid var(--line);border-radius:8px}
+.cell{cursor:default}.edit .cell{cursor:pointer;outline:1px dashed var(--acc)}small{font-size:11px;color:var(--mut)}
+@media print{header,nav,.noprint{display:none!important}body{background:#fff}main{padding:0}}
+</style></head><body>
+<header><h1>Coaching Centre Timetable</h1><span id="who"></span><button id="out" style="display:none" onclick="logout()">Sign out</button></header>
+<div id="app"></div>
+<dialog id="dlg"></dialog>
+<script>
+/* ===== Put your Firebase web config here to share the app with your team (see SETUP guide) ===== */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyBsbj4AXehEvI2iYm0u8zRS1ayuDtwv8GQ",
+  authDomain: "coaching-timetable.firebaseapp.com",
+  projectId: "coaching-timetable",
+  storageBucket: "coaching-timetable.firebasestorage.app",
+  messagingSenderId: "244638268551",
+  appId: "1:244638268551:web:14f20109dd85de74384c22",
+  measurementId: "G-69HQLFMX1N"
+}; // e.g. {apiKey:"...",authDomain:"...",projectId:"...",appId:"..."}
+
+const DAYS=["Su","M","T","W","Th","F","S"],DN={Su:"Sun",M:"Mon",T:"Tue",W:"Wed",Th:"Thu",F:"Fri",S:"Sat"};
+const COLL=["branches","subjects","batchTypes","rooms","batches","faculty","classTypes","classRules","events","noClasses","merges"];
+const TABS=[["branches","Branches"],["subjects","Subjects"],["batchTypes","Batch Types"],["rooms","Rooms"],["batches","Batches"],["faculty","Faculty"],["classTypes","Class Types"],["events","Exam / Activity"],["noClasses","No-Classes"],["merges","Batch Merge"],["generator","Generator"],["reports","Reports"],["settings","Settings"]];
+const emptyDb=()=>{const o={manual:{}};COLL.forEach(c=>o[c]=[]);return o};
+let db=emptyDb(),me={role:"Admin",email:"local"},mode="",tab="branches",D={},G={from:"",to:"",branch:"",batchIds:[],edit:false},lastOut="",fs,auth,saveT,backedUp=false;
+const $=s=>document.querySelector(s),uid=()=>Math.random().toString(36).slice(2,9)+Date.now().toString(36).slice(-3);
+const h=s=>String(s??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+const can=()=>me.role==="Admin"||me.role==="Editor",ymd=d=>d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+const pd=s=>new Date(s+"T00:00:00"),tmin=t=>{const [a,b]=(t||"0:0").split(":");return +a*60+ +b},ov=(a,b,c,e)=>tmin(a)<tmin(e)&&tmin(c)<tmin(b);
+const nm=(c,id)=>(db[c].find(x=>x.id===id)||{}).name||"?";
+const col=id=>{let n=0;for(const c of id)n=(n*31+c.charCodeAt(0))%360;return`hsl(${n} 70% 88%)`};
+const tbl=(hd,rows)=>`<div class="sc"><table><tr>${hd.map(x=>`<th>${x}</th>`).join("")}</tr>${rows.length?rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join("")}</tr>`).join(""):`<tr><td colspan="${hd.length}" class="mut">Nothing added yet.</td></tr>`}</table></div>`;
+const acts=(t,id)=>can()?`<button onclick="ed('${t}','${id}')">Edit</button> <button class="d" onclick="del('${t}','${id}')">Delete</button>`:"";
+const names=(c,ids)=>(ids||[]).map(i=>h(nm(c,i))).join(", ")||"–";
+
+/* ===== form helpers (state lives in D; dependent dropdowns re-render) ===== */
+const setD=(k,v,re)=>{D[k]=v;if(re)render()};
+const tg=(k,id)=>{D[k]=D[k]||[];const i=D[k].indexOf(id);i<0?D[k].push(id):D[k].splice(i,1);render()};
+const inp=(k,l,t="text")=>`<label>${l}<input type="${t}" value="${h(D[k])}" oninput="D['${k}']=this.value"></label>`;
+const sel=(k,l,o,re=1,blank="Select…")=>`<label>${l}<select onchange="setD('${k}',this.value,${re})"><option value="">${blank}</option>${o.map(x=>`<option value="${x.id}" ${D[k]===x.id?"selected":""}>${h(x.name)}</option>`).join("")}</select></label>`;
+const chks=(k,l,o,empty="None available")=>`<div><div class="mut" style="font-size:12px">${l}</div><div class="pills">${o.length?o.map(x=>`<label><input type="checkbox" ${(D[k]||[]).includes(x.id)?"checked":""} onchange="tg('${k}','${x.id}')">${h(x.name)}</label>`).join(""):`<span class="mut">${empty}</span>`}</div></div>`;
+const days=(k)=>`<div class="pills">${DAYS.map(d=>`<label><input type="checkbox" ${(D[k]||[]).includes(d)?"checked":""} onchange="tg('${k}','${d}')">${DN[d]}</label>`).join("")}</div>`;
+const btns=t=>`<button class="p" onclick="save('${t}')">${D.id?"Update":"Save"}</button> <button onclick="D={};render()">Clear</button>`;
+const card=(t,b)=>`<div class="card"><h2>${t}</h2>${b}</div>`;
+const ro=()=>can()?"":`<div class="err">View only. Ask an admin for Editor access to change data.</div>`;
+
+/* ===== persistence ===== */
+function persist(){
+  if(mode==="local")localStorage.setItem("tt_db",JSON.stringify(db));
+  else{clearTimeout(saveT);saveT=setTimeout(cloudSave,500)}
+  render();
+}
+async function cloudSave(){
+  if(JSON.stringify(db).length>900000)alert("Warning: data is close to the free database limit for one document (1 MB). Download a backup and tell your admin.");
+  try{await fs.doc("org/data").set({json:JSON.stringify(db),by:me.email,at:Date.now()});
+    const k="backups/"+ymd(new Date());if(!backedUp){backedUp=true;const s=await fs.doc(k).get();if(!s.exists)await fs.doc(k).set({json:JSON.stringify(db),at:Date.now()})}
+  }catch(e){alert("Could not save to cloud: "+e.message)}
+}
+function load(o){db=Object.assign(emptyDb(),o||{});COLL.forEach(c=>db[c]=db[c]||[])}
+
+/* ===== start / login ===== */
+function start(){
+  const cfg=FIREBASE_CONFIG||JSON.parse(localStorage.getItem("tt_cfg")||"null");
+  if(localStorage.getItem("tt_mode")==="local"){mode="local";load(JSON.parse(localStorage.getItem("tt_db")||"{}"));return shell()}
+  if(!cfg)return $("#app").innerHTML=`<div class="card lock"><h2>Connect your free cloud database</h2><p class="mut">Paste the Firebase web config (JSON). Follow SETUP_GUIDE.md. To try the app alone on this device, use local mode.</p><textarea id="cfg" rows="6" style="width:100%" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","appId":"..."}'></textarea><div class="row" style="margin-top:8px"><button class="p" onclick="saveCfg()">Connect</button><button onclick="localMode()">Use local mode</button></div></div>`;
+  mode="cloud";firebase.initializeApp(cfg);auth=firebase.auth();fs=firebase.firestore();
+  auth.onAuthStateChanged(async u=>{
+    if(!u)return loginUI();
+    try{const r=fs.doc("users/"+u.uid);let s=await r.get();if(!s.exists){await r.set({email:u.email,role:"Pending"});s=await r.get()}
+      me={uid:u.uid,email:u.email,role:s.data().role};
+      if(me.role==="Pending")return $("#app").innerHTML=`<div class="card lock"><h2>Waiting for approval</h2><p>Your account <b>${h(u.email)}</b> is created. An admin must give you a role. Then reload this page.</p><button onclick="logout()">Sign out</button></div>`;
+      fs.doc("org/data").onSnapshot(sn=>{if(sn.metadata.hasPendingWrites)return;load(sn.exists?JSON.parse(sn.data().json):{});shell()},e=>alert("Read failed: "+e.message));
+    }catch(e){alert("Login error: "+e.message)}
+  });
+}
+function saveCfg(){try{const c=JSON.parse($("#cfg").value);localStorage.setItem("tt_cfg",JSON.stringify(c));location.reload()}catch(e){alert("That is not valid JSON.")}}
+function localMode(){localStorage.setItem("tt_mode","local");location.reload()}
+function loginUI(){$("#out").style.display="none";$("#who").textContent="";$("#app").innerHTML=`<div class="card lock"><h2>Sign in</h2><input id="em" type="email" placeholder="Email"><input id="pw" type="password" placeholder="Password (6+ characters)"><div class="row"><button class="p" onclick="doLogin()">Sign in</button><button onclick="doSignup()">Create account</button></div><p id="lm" class="mut"></p></div>`}
+const lerr=e=>$("#lm").textContent=e.message;
+function doLogin(){auth.signInWithEmailAndPassword($("#em").value,$("#pw").value).catch(lerr)}
+function doSignup(){auth.createUserWithEmailAndPassword($("#em").value,$("#pw").value).catch(lerr)}
+function logout(){if(mode==="local"){localStorage.removeItem("tt_mode");location.reload()}else auth.signOut().then(()=>location.reload())}
+function shell(){$("#out").style.display="";$("#who").textContent=(mode==="local"?"Local mode":me.email)+" · "+me.role;render()}
+
+/* ===== navigation + rendering ===== */
+function go(t){tab=t;D={};render()}
+function render(){
+  $("#app").innerHTML=`<nav class="noprint">${TABS.map(t=>`<button class="${t[0]===tab?"on":""}" onclick="go('${t[0]}')">${t[1]}</button>`).join("")}</nav><main>${ro()}${(V[tab]||V.simple)()}</main>`;
+}
+function ed(t,id){const k=t==="classTypes"?"classTypes":t;D=JSON.parse(JSON.stringify(db[k].find(x=>x.id===id)));if(t==="faculty")D.batchIds=D.batchIds||[];render();scrollTo(0,0)}
+function usage(t,id){
+  const u=[],c=(a,l)=>{if(a.length)u.push(a.length+" "+l)};
+  if(t==="branches"){c(db.rooms.filter(x=>x.branchId===id),"room(s)");c(db.batches.filter(x=>x.branchId===id),"batch(es)");c(db.faculty.filter(x=>(x.branchIds||[]).includes(id)),"faculty")}
+  if(t==="subjects"){c(db.batches.filter(x=>(x.subjectIds||[]).includes(id)),"batch(es)");c(db.faculty.filter(x=>(x.subjectIds||[]).includes(id)),"faculty");c(db.merges.filter(x=>x.subjectId===id),"merge(s)");c(db.classRules.filter(x=>x.subjectId===id),"class-type rule(s)")}
+  if(t==="faculty")c(db.merges.filter(x=>x.facultyId===id),"merge(s)");
+  if(t==="batchTypes")c(db.batches.filter(x=>x.typeId===id),"batch(es)");
+  if(t==="rooms")c(db.batches.filter(x=>x.roomId===id),"batch(es)");
+  if(t==="classTypes")c(db.classRules.filter(x=>x.typeId===id),"rule(s)");
+  return u.join(", ");
+}
+function del(t,id){
+  if(!can())return;const u=usage(t,id);
+  if(u)return alert("Cannot delete. It is still used by "+u+". Remove or change those first.");
+  if(!confirm("Delete this item?"))return;
+  db[t]=db[t].filter(x=>x.id!==id);
+  if(t==="batches"){db.faculty.forEach(f=>f.batchIds=(f.batchIds||[]).filter(b=>b!==id));["classRules","events","noClasses","merges"].forEach(c=>db[c].forEach(r=>r.batchIds=(r.batchIds||[]).filter(b=>b!==id)));db.merges=db.merges.filter(m=>m.batchIds.length>1)}
+  persist();
+}
+function put(t,o){
+  if(!can())return alert("You have view-only access.");
+  if(D.id)Object.assign(db[t].find(x=>x.id===D.id),o);else db[t].push({id:uid(),...o});
+  D={};persist();
+}
+const dup=(t,name,extra=()=>true)=>db[t].some(x=>x.id!==D.id&&x.name.toLowerCase()===name.toLowerCase()&&extra(x));
+
+function save(t){
+  const n=(D.name||"").trim();
+  if(["branches","subjects","batchTypes","classTypes"].includes(t)){if(!n)return alert("Enter a name.");if(dup(t,n))return alert("This name already exists.");return put(t,{name:n})}
+  if(t==="rooms"){if(!n||!D.branchId)return alert("Enter a room name and choose its branch.");if(dup("rooms",n,x=>x.branchId===D.branchId))return alert("This branch already has that room.");return put(t,{name:n,branchId:D.branchId,capacity:D.capacity||""})}
+  if(t==="batches"){
+    if(!n||!D.branchId||!D.roomId||!D.typeId)return alert("Batch name, branch, batch type and room are required.");
+    if(dup("batches",n))return alert("Batch name must be unique.");
+    const ps=(D.periods||[]).filter(p=>p.from&&p.to);if(!ps.length||ps.some(p=>tmin(p.to)<=tmin(p.from)))return alert("Add at least one period, and make each end time later than its start.");
+    if(!(D.days||[]).length)return alert("Choose class days.");if(!(D.subjectIds||[]).length)return alert("Choose the subjects taught in this batch.");
+    for(const o of db.batches){if(o.id===D.id||o.roomId!==D.roomId)continue;if(o.days.some(d=>D.days.includes(d))&&o.periods.some(a=>ps.some(b=>ov(a.from,a.to,b.from,b.to))))return alert("Room clash: "+nm("rooms",D.roomId)+" is already used by batch "+o.name+" at an overlapping time on a shared day.")}
+    const bid=D.id||uid(),fids=D.facultyIds||[],wasNew=!D.id;
+    const o={name:n,branchId:D.branchId,roomId:D.roomId,typeId:D.typeId,subjectIds:D.subjectIds,days:D.days,periods:ps};
+    if(!can())return alert("You have view-only access.");
+    if(wasNew)db.batches.push({id:bid,...o});else Object.assign(db.batches.find(x=>x.id===bid),o);
+    db.faculty.forEach(f=>{const has=f.batchIds.includes(bid),want=fids.includes(f.id);if(want&&!has)f.batchIds.push(bid);if(!want&&has)f.batchIds=f.batchIds.filter(x=>x!==bid)});
+    D={};return persist();
+  }
+  if(t==="faculty"){
+    if(!n||!(D.short||"").trim())return alert("Faculty name and short name are required.");
+    if(!(D.subjectIds||[]).length)return alert("Choose at least one subject.");if(!(D.batchIds||[]).length)return alert("Map this faculty to at least one batch.");
+    if(D.leaveFrom&&D.leaveTo&&D.leaveTo<D.leaveFrom)return alert("Leave To must not be before Leave From.");
+    return put(t,{name:n,short:D.short.trim(),branchIds:D.branchIds||[],subjectIds:D.subjectIds,batchIds:D.batchIds,leaveFrom:D.leaveFrom||"",leaveTo:D.leaveTo||"",leftDate:D.leftDate||""});
+  }
+  if(t==="classRules"){if(!D.typeId||!D.from||!D.to||!(D.batchIds||[]).length)return alert("Choose class type, dates and at least one batch.");if(D.to<D.from)return alert("To date is before From date.");return put(t,{typeId:D.typeId,subjectId:D.subjectId||"",from:D.from,to:D.to,tf:D.tf||"",tt:D.tt||"",batchIds:D.batchIds})}
+  if(t==="events"){if(!n||!D.kind||!D.from||!(D.batchIds||[]).length)return alert("Choose type, name, date and batches.");if(D.to&&D.to<D.from)return alert("To date is before From date.");return put(t,{kind:D.kind,name:n,from:D.from,to:D.to||D.from,tf:D.tf||"",tt:D.tt||"",batchIds:D.batchIds})}
+  if(t==="merges"){if(!D.subjectId||!D.facultyId||!D.from||!D.to||!D.tf||!D.tt)return alert("Choose subject, faculty, dates and merged class time.");if(D.to<D.from||tmin(D.tt)<=tmin(D.tf))return alert("Check the dates and time range.");if((D.batchIds||[]).length<2)return alert("Choose at least two batches to merge.");
+    const bad=D.batchIds.filter(id=>!db.batches.find(b=>b.id===id).periods.some(p=>ov(D.tf,D.tt,p.from,p.to)));if(bad.length)return alert("These batches have no period at that time: "+bad.map(i=>nm("batches",i)).join(", "));
+    return put(t,{subjectId:D.subjectId,facultyId:D.facultyId,from:D.from,to:D.to,days:D.days||[],tf:D.tf,tt:D.tt,batchIds:D.batchIds})}
+  if(t==="noClasses"){if(!D.from||!D.to||D.to<D.from)return alert("Choose a valid date range.");const ids=D.all?db.batches.map(b=>b.id):(D.batchIds||[]);if(!ids.length)return alert("Choose batches or All batches.");return put(t,{from:D.from,to:D.to,reason:D.reason||"No class",all:!!D.all,batchIds:ids})}
+}
+
+/* ===== tab views ===== */
+const bOpts=()=>[...db.batches].sort((a,b)=>a.name.localeCompare(b.name));
+const V={
+simple(){const L={branches:"Branch",subjects:"Subject",batchTypes:"Batch type",classTypes:"Class type"}[tab];
+  const rows=db[tab].map(x=>[h(x.name),h(usage(tab,x.id)||"Not used yet"),acts(tab,x.id)]);
+  return card(L+"es".slice(L.endsWith("h")?0:1),`<div class="row">${inp("name",L+" name")}${btns(tab)}</div>`)+card("List",tbl(["Name","Linked to","Actions"],rows))},
+rooms(){return card("Rooms",`<div class="row">${inp("name","Room no / name")}${sel("branchId","Branch",db.branches,0)}${inp("capacity","Seats","number")}${btns("rooms")}</div>`)+
+  card("List",tbl(["Room","Branch","Seats","Used by","Actions"],db.rooms.map(r=>[h(r.name),h(nm("branches",r.branchId)),h(r.capacity),h(db.batches.filter(b=>b.roomId===r.id).map(b=>b.name).join(", ")||"–"),acts("rooms",r.id)])))},
+batches(){
+  D.periods=D.periods||[{from:"",to:""}];
+  const rooms=db.rooms.filter(r=>r.branchId===D.branchId);
+  const fac=db.faculty.filter(f=>f.subjectIds.some(s=>(D.subjectIds||[]).includes(s))&&(!(f.branchIds||[]).length||f.branchIds.includes(D.branchId)));
+  D.facultyIds=D.facultyIds??(D.id?db.faculty.filter(f=>f.batchIds.includes(D.id)).map(f=>f.id):[]);
+  const form=`<div class="row">${inp("name","Batch name (unique)")}${sel("branchId","Branch",db.branches,1)}${sel("typeId","Batch type",db.batchTypes,0)}<label>Room (filtered by branch)<select onchange="setD('roomId',this.value)"><option value="">${D.branchId?"Select…":"Choose branch first"}</option>${rooms.map(r=>`<option value="${r.id}" ${D.roomId===r.id?"selected":""}>${h(r.name)}</option>`).join("")}</select></label></div>
+  <h3>Subjects taught</h3>${chks("subjectIds","",db.subjects,"Add subjects first")}<h3>Class days</h3>${days("days")}
+  <h3>Periods</h3>${D.periods.map((p,i)=>`<div class="row" style="margin-bottom:4px"><b>P${i+1}</b><input type="time" value="${p.from}" oninput="D.periods[${i}].from=this.value"> to <input type="time" value="${p.to}" oninput="D.periods[${i}].to=this.value"><button class="d" onclick="D.periods.splice(${i},1);render()">Remove</button></div>`).join("")}<button onclick="D.periods.push({from:'',to:''});render()">Add period</button>
+  <h3>Faculty for this batch</h3>${chks("facultyIds","",fac,"Choose branch and subjects to see matching faculty")}<p class="mut">Ticked faculty are linked to this batch when you save.</p>
+  <div class="row">${btns("batches")}</div>`;
+  const rows=db.batches.map(b=>[h(b.name),h(nm("branches",b.branchId)),h(nm("batchTypes",b.typeId)),h(nm("rooms",b.roomId)),names("subjects",b.subjectIds),b.days.map(d=>DN[d]).join(" "),b.periods.map(p=>p.from+"-"+p.to).join("<br>"),h(db.faculty.filter(f=>f.batchIds.includes(b.id)).map(f=>f.short).join(", ")||"–"),acts("batches",b.id)]);
+  return card("Batches",form)+card("List",tbl(["Batch","Branch","Type","Room","Subjects","Days","Periods","Faculty","Actions"],rows))},
+faculty(){
+  const bs=db.batches.filter(b=>(!(D.branchIds||[]).length||D.branchIds.includes(b.branchId))&&(!(D.subjectIds||[]).length||b.subjectIds.some(s=>D.subjectIds.includes(s))));
+  const form=`<div class="row">${inp("name","Faculty name")}${inp("short","Short name")}</div><h3>Branches</h3>${chks("branchIds","",db.branches)}<h3>Subjects</h3>${chks("subjectIds","",db.subjects,"Add subjects first")}
+  <h3>Batches (only batches of the chosen branches that teach these subjects)</h3>${chks("batchIds","",bs,"Choose subjects to see batches")}
+  <h3>Leave / left</h3><div class="row">${inp("leaveFrom","Leave from","date")}${inp("leaveTo","Leave to","date")}${inp("leftDate","Left date","date")}</div><div class="row" style="margin-top:8px">${btns("faculty")}</div>`;
+  return card("Faculty",form)+card("List",tbl(["Name","Short","Branches","Subjects","Batches","Leave","Actions"],db.faculty.map(f=>[h(f.name),h(f.short),names("branches",f.branchIds),names("subjects",f.subjectIds),names("batches",f.batchIds),h((f.leaveFrom?f.leaveFrom+" → "+f.leaveTo:"")+(f.leftDate?" Left "+f.leftDate:"")||"–"),acts("faculty",f.id)])))},
+classTypes(){
+  const L=V.simple();
+  const form=`<div class="row">${sel("typeId","Class type",db.classTypes,0)}${sel("subjectId","Subject (optional)",db.subjects,0,"Any")}${inp("from","From","date")}${inp("to","To","date")}${inp("tf","Time from","time")}${inp("tt","Time to","time")}</div>${chks("batchIds","Batches",bOpts())}<div class="row" style="margin-top:8px">${btns("classRules")}</div>`;
+  return L+card("Apply a class type to dates, time and batches",form)+card("Applied class types",tbl(["Type","Subject","Dates","Time","Batches","Actions"],db.classRules.map(r=>[h(nm("classTypes",r.typeId)),r.subjectId?h(nm("subjects",r.subjectId)):"Any",h(r.from+" → "+r.to),h(r.tf?r.tf+"-"+r.tt:"All periods"),names("batches",r.batchIds),acts("classRules",r.id)])))},
+events(){const form=`<div class="row"><label>Kind<select onchange="setD('kind',this.value)"><option value="">Select…</option>${["Exam","Activity"].map(k=>`<option ${D.kind===k?"selected":""}>${k}</option>`).join("")}</select></label>${inp("name","Name")}${inp("from","From date","date")}${inp("to","To date (optional)","date")}${inp("tf","Time from","time")}${inp("tt","Time to","time")}</div>${chks("batchIds","Batches",bOpts())}<div class="row" style="margin-top:8px">${btns("events")}</div>`;
+  return card("Exam / Activity",form)+card("List",tbl(["Kind","Name","Dates","Time","Batches","Actions"],db.events.map(e=>[h(e.kind),h(e.name),h(e.from+(e.to!==e.from?" → "+e.to:"")),h(e.tf?e.tf+"-"+e.tt:"All periods"),names("batches",e.batchIds),acts("events",e.id)])))},
+noClasses(){const form=`<div class="row">${inp("from","From","date")}${inp("to","To","date")}${inp("reason","Reason")}<label class="pills"><span><input type="checkbox" ${D.all?"checked":""} onchange="setD('all',this.checked,1)"> All batches</span></label></div>${D.all?"":chks("batchIds","Batches",bOpts())}<div class="row" style="margin-top:8px">${btns("noClasses")}</div>`;
+  return card("No-Classes (holidays, events)",form)+card("List",tbl(["Dates","Reason","Batches","Actions"],db.noClasses.map(n=>[h(n.from+" → "+n.to),h(n.reason),n.all?"All":names("batches",n.batchIds),acts("noClasses",n.id)])))},
+settings(){return V.users()}
+};
+const gtg=id=>{const i=G.batchIds.indexOf(id);i<0?G.batchIds.push(id):G.batchIds.splice(i,1)};
+V.users=function(){
+  let s=card("Backup and restore",`<div class="row"><button onclick="backup()">Download backup (JSON)</button><label class="p" style="padding:6px 11px;border-radius:6px;cursor:pointer">Restore from file<input type="file" accept=".json" style="display:none" onchange="restore(this.files[0])"></label></div><p class="mut">${mode==="cloud"?"A daily backup is also saved automatically in your free Firebase database (kept in Firestore under backups).":"Local mode keeps data in this browser only. Download backups often."}</p>${mode==="cloud"&&can()?`<div class="row" style="margin-bottom:8px"><button class="p" onclick="bkNow()">Save a backup to the cloud now</button></div>`:""}${mode==="cloud"&&me.role==="Admin"?`<div id="bl"><button onclick="listBk()">Show cloud backups</button></div>`:""}`);
+  if(mode==="cloud"&&me.role==="Admin")s+=card("Users","<div id='ul'><button onclick='listUsers()'>Load users</button></div>");
+  return s;
+};
+async function listUsers(){const q=await fs.collection("users").get();$("#ul").innerHTML=tbl(["Email","Role"],q.docs.map(d=>[h(d.data().email),`<select onchange="fs.doc('users/${d.id}').update({role:this.value})">${["Pending","Viewer","Editor","Admin"].map(r=>`<option ${d.data().role===r?"selected":""}>${r}</option>`).join("")}</select>`]))}
+async function bkNow(){try{const t=new Date();await fs.doc("backups/"+ymd(t)+"_"+String(t.getHours()).padStart(2,"0")+String(t.getMinutes()).padStart(2,"0")).set({json:JSON.stringify(db),at:Date.now(),by:me.email});alert("Backup saved in the cloud.")}catch(e){alert("Backup failed: "+e.message)}}
+async function listBk(){const q=await fs.collection("backups").get();const ds=q.docs.map(d=>d.id).sort().reverse();$("#bl").innerHTML=tbl(["Date","Action"],ds.map(i=>[i,`<button onclick="restoreCloud('${i}')">Restore</button>`]))}
+async function restoreCloud(i){if(!confirm("Replace current data with backup "+i+"?"))return;const s=await fs.doc("backups/"+i).get();load(JSON.parse(s.data().json));persist()}
+function backup(){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(db)],{type:"application/json"}));a.download="timetable_backup_"+ymd(new Date())+".json";a.click()}
+function restore(f){if(!f||!can())return;const r=new FileReader();r.onload=()=>{try{if(!confirm("Replace all current data with this file?"))return;load(JSON.parse(r.result));persist()}catch(e){alert("Invalid backup file.")}};r.readAsText(f)}
+
+/* ===== schedule engine (used by Generator and Reports) ===== */
+const wk=ds=>{const d=pd(ds);d.setDate(d.getDate()-(d.getDay()+6)%7);return ymd(d)};
+const fd=x=>/^\d{4}-\d\d-\d\d$/.test(x)?x.split("-").reverse().join("-"):x;
+const hm=m=>Math.floor(m/60)+"h "+String(m%60).padStart(2,"0")+"m";
+function build(from,to,show){
+  const recs=[],all=[...db.batches].sort((a,b)=>nm("branches",a.branchId).localeCompare(nm("branches",b.branchId))||a.name.localeCompare(b.name));let out="";
+  const avail=(f,ds)=>!(f.leftDate&&ds>=f.leftDate)&&!(f.leaveFrom&&f.leaveTo&&ds>=f.leaveFrom&&ds<=f.leaveTo);
+  for(let d=pd(from);ymd(d)<=to;d.setDate(d.getDate()+1)){
+    const ds=ymd(d),dc=DAYS[d.getDay()],doy=Math.floor((d-new Date(d.getFullYear(),0,0))/864e5);
+    const evs=db.events.filter(e=>e.from<=ds&&ds<=e.to),mg=db.merges.filter(m=>m.from<=ds&&ds<=m.to&&(!m.days.length||m.days.includes(dc)));
+    const active=all.filter(b=>b.days.includes(dc)||evs.some(e=>e.batchIds.includes(b.id)));
+    const busy={},load={},mm={},rows={},groups=new Map();
+    mg.forEach(m=>{const f=db.faculty.find(x=>x.id===m.facultyId);m.batchIds.forEach(id=>{const b=active.find(x=>x.id===id);if(b&&b.days.includes(dc))b.periods.forEach((p,i)=>{if(ov(m.tf,m.tt,p.from,p.to)){mm[id+"|"+i]=m;if(f&&avail(f,ds))(busy[f.id]=busy[f.id]||[]).push([p.from,p.to])}})})});
+    for(const b of active){
+      const vis=show.has(b.id),nc=db.noClasses.find(n=>n.from<=ds&&ds<=n.to&&n.batchIds.includes(b.id)),used={},be=evs.filter(e=>e.batchIds.includes(b.id));let prev="",cells="";
+      b.periods.forEach((p,i)=>{
+        const click=G.edit&&vis?` class="cell" onclick="cellEdit('${ds}','${b.id}',${i})"`:"",td=(t,bg)=>`<td${click}${bg?` style="background:${bg}"`:""}>${t}</td>`;
+        const key=ds+"|"+b.id+"|"+i,man=db.manual[key]||{},mer=mm[b.id+"|"+i];
+        if(nc)return cells+=td(h(nc.reason),"#e5e7eb");
+        const blk=be.find(e=>!e.tf||ov(e.tf,e.tt,p.from,p.to));if(blk)return cells+=td(h(blk.kind)+": "+h(blk.name),"#fde68a");
+        if(!b.days.includes(dc))return cells+=td("");
+        if(man.cancel)return cells+=td("<b>Cancelled</b><br><small>"+h(man.reason)+"</small>","#e5e7eb");
+        const rule=db.classRules.find(r=>r.from<=ds&&ds<=r.to&&r.batchIds.includes(b.id)&&(!r.tf||ov(r.tf,r.tt,p.from,p.to)));
+        let sub=mer?mer.subjectId:(man.subjectId||rule?.subjectId||""),fac=null,clash=false;
+        const isBusy=f=>(busy[f.id]||[]).some(x=>ov(x[0],x[1],p.from,p.to));
+        if(mer){fac=db.faculty.find(f=>f.id===mer.facultyId);if(fac&&!avail(fac,ds))fac=null}
+        else if(man.facultyId){fac=db.faculty.find(f=>f.id===man.facultyId);if(fac&&!avail(fac,ds))fac=null;if(fac&&isBusy(fac)){fac=null;clash=true}if(fac&&!sub)sub=fac.subjectIds.find(x=>b.subjectIds.includes(x))||fac.subjectIds[0]}
+        else{
+          const elig=s=>db.faculty.filter(f=>f.batchIds.includes(b.id)&&f.subjectIds.includes(s)&&avail(f,ds)&&!isBusy(f)).sort((x,y)=>(load[x.id]||0)-(load[y.id]||0));
+          const n=b.subjectIds.length,cand=sub?[sub]:b.subjectIds.map((s,pos)=>({s,sc:(used[s]||0)*10+(((pos-(i+doy))%n)+n)%n+(s===prev&&n>1?50:0)})).sort((x,y)=>x.sc-y.sc).map(x=>x.s);
+          for(const s of cand){const e=elig(s);if(e.length){fac=e[0];sub=s;break}}
+        }
+        if(!fac||!sub)return cells+=td(clash?"Faculty clash":"Not assigned","#fee2e2");
+        if(!mer){(busy[fac.id]=busy[fac.id]||[]).push([p.from,p.to]);load[fac.id]=(load[fac.id]||0)+1}
+        used[sub]=(used[sub]||0)+1;prev=sub;
+        if(vis)recs.push({ds,dc,bid:b.id,fid:fac.id,sid:sub,from:p.from,to:p.to,mins:tmin(p.to)-tmin(p.from),merged:!!mer});
+        const mt=mer?`<small>Merged: ${mer.batchIds.map(x=>h(nm("batches",x))).join(" + ")}</small><br>`:"";
+        cells+=td(`${mt}${rule&&!mer?`<small>${h(nm("classTypes",rule.typeId))}</small><br>`:""}<b>${h(nm("subjects",sub))}</b><br>${h(fac.short)}`,col(sub));
+      });
+      if(vis){const k=b.periods.map(p=>p.from+"-"+p.to).join("|");if(!groups.has(k))groups.set(k,[]);groups.get(k).push(b);
+        rows[b.id]=`<tr><td>${h(nm("branches",b.branchId))}</td><td><b>${h(b.name)}</b></td><td>${h(nm("rooms",b.roomId))}</td>${cells}<td class="l">${be.map(e=>h(e.kind+": "+e.name)).join("<br>")}</td></tr>`}
+    }
+    if(!show.size)continue;
+    out+=`<h3 class="dt">${d.toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"long",year:"numeric"})}</h3>`;
+    if(!groups.size)out+=`<p class="mut">No batches scheduled.</p>`;
+    [...groups.values()].sort((a,b)=>tmin(a[0].periods[0].from)-tmin(b[0].periods[0].from)).forEach(bs=>{
+      out+=`<div class="sc"><table class="gt"><tr><th>Branch</th><th>Batch</th><th>Room</th>${bs[0].periods.map((p,i)=>`<th>P${i+1}<br><small>${p.from}-${p.to}</small></th>`).join("")}<th>Notes</th></tr>${bs.map(b=>rows[b.id]).join("")}</table></div>`});
+  }
+  return{out,recs};
+}
+function runGen(){
+  if(!G.from||!G.to||G.to<G.from){lastOut="";render();return alert("Choose a valid From and To date.")}
+  const ids=db.batches.filter(b=>(!G.branch||b.branchId===G.branch)&&(!G.batchIds.length||G.batchIds.includes(b.id))).map(b=>b.id);
+  lastOut=build(G.from,G.to,new Set(ids)).out||'<p class="mut">No batches to show.</p>';render();
+}
+V.generator=function(){
+  const o=bOpts().filter(b=>!G.branch||b.branchId===G.branch);
+  return card("Timetable generator",`<div class="row noprint"><label>From<input type="date" value="${G.from}" oninput="G.from=this.value"></label><label>To<input type="date" value="${G.to}" oninput="G.to=this.value"></label><label>Branch<select onchange="G.branch=this.value;G.batchIds=[];render()"><option value="">All branches</option>${db.branches.map(b=>`<option value="${b.id}" ${G.branch===b.id?"selected":""}>${h(b.name)}</option>`).join("")}</select></label><label class="pills"><span><input type="checkbox" ${G.edit?"checked":""} onchange="G.edit=this.checked;if(lastOut)runGen()"> Edit mode: click a cell to change, merge or cancel</span></label><button class="p" onclick="runGen()">Generate</button><button onclick="print()">Print / PDF</button><button onclick="xls('gout')">Excel</button></div>
+  <div class="noprint" style="margin-top:8px"><div class="mut" style="font-size:12px">Limit to batches (none ticked = all)</div><div class="pills">${o.map(b=>`<label><input type="checkbox" ${G.batchIds.includes(b.id)?"checked":""} onchange="gtg('${b.id}')">${h(b.name)}</label>`).join("")}</div></div>`)+`<div id="gout" class="${G.edit?"edit":""}">${lastOut}</div>`};
+V.merges=function(){
+  const bs=bOpts().filter(b=>!D.subjectId||b.subjectIds.includes(D.subjectId)),fc=db.faculty.filter(f=>!D.subjectId||f.subjectIds.includes(D.subjectId));
+  const form=`<p class="mut">One faculty teaches two or more batches together in the same period. For a one-off merge, use Edit mode in the Generator.</p><div class="row">${sel("subjectId","Subject",db.subjects,1)}<label>Faculty<select onchange="setD('facultyId',this.value)"><option value="">Select…</option>${fc.map(f=>`<option value="${f.id}" ${D.facultyId===f.id?"selected":""}>${h(f.name)}</option>`).join("")}</select></label>${inp("from","From","date")}${inp("to","To","date")}${inp("tf","Class time from","time")}${inp("tt","Class time to","time")}</div>
+  <h3>Days (none ticked = every day in the range)</h3>${days("days")}<h3>Batches to merge</h3>${chks("batchIds","",bs,"Choose a subject to see batches")}<div class="row" style="margin-top:8px">${btns("merges")}</div>`;
+  return card("Batch Merge",form)+card("List",tbl(["Batches","Subject","Faculty","Dates","Days","Time","Actions"],db.merges.map(m=>[names("batches",m.batchIds),h(nm("subjects",m.subjectId)),h(nm("faculty",m.facultyId)),h(fd(m.from)+(m.to!==m.from?" → "+fd(m.to):"")),h(m.days.length?m.days.map(d=>DN[d]).join(" "):"Every day"),h(m.tf+"-"+m.tt),acts("merges",m.id)])))};
+
+/* ===== cell edit: change, merge, cancel ===== */
+let E={};
+function cellEdit(ds,bid,i){
+  if(!can())return;const b=db.batches.find(x=>x.id===bid),p=b.periods[i],dc=DAYS[pd(ds).getDay()],k=ds+"|"+bid+"|"+i,m=db.manual[k]||{};
+  const mer=db.merges.find(x=>x.from<=ds&&ds<=x.to&&(!x.days.length||x.days.includes(dc))&&x.batchIds.includes(bid)&&ov(x.tf,x.tt,p.from,p.to));
+  const others=db.batches.filter(o=>o.id!==bid&&o.days.includes(dc)&&o.periods.some(q=>ov(q.from,q.to,p.from,p.to)));
+  E={k,ds,bid,p,mer,others,s:m.subjectId||"",f:m.facultyId||"",cancel:!!m.cancel,reason:m.reason||"",merge:[]};drawE();$("#dlg").showModal();
+}
+function drawE(){
+  const b=db.batches.find(x=>x.id===E.bid),fl=db.faculty.filter(f=>(f.batchIds.includes(E.bid)||E.merge.some(x=>f.batchIds.includes(x)))&&(!E.s||f.subjectIds.includes(E.s)));
+  let body=`<h3>${h(b.name)} · ${fd(E.ds)} · ${E.p.from}-${E.p.to}</h3>`;
+  if(E.mer)body+=`<div class="ok">Merged class: ${names("batches",E.mer.batchIds)} with ${h(nm("faculty",E.mer.facultyId))}.<br><button class="d" onclick="rmMerge()">Remove this merge</button><br><small>This removes the merge for all its dates. Edit its dates in the Batch Merge tab.</small></div>`;
+  else body+=`<div class="row"><label>Subject<select onchange="E.s=this.value;E.f='';drawE()"><option value="">Auto</option>${b.subjectIds.map(s=>`<option value="${s}" ${E.s===s?"selected":""}>${h(nm("subjects",s))}</option>`).join("")}</select></label><label>Faculty<select onchange="E.f=this.value"><option value="">Auto</option>${fl.map(f=>`<option value="${f.id}" ${E.f===f.id?"selected":""}>${h(f.name)}</option>`).join("")}</select></label></div>
+  <h3>Merge with other batches (same time, same faculty)</h3><div class="pills">${E.others.length?E.others.map(o=>`<label><input type="checkbox" ${E.merge.includes(o.id)?"checked":""} onchange="mt('${o.id}')">${h(o.name)}</label>`).join(""):'<span class="mut">No other batch has a class at this time.</span>'}</div>`;
+  body+=`<h3>Cancel this class</h3><div class="row"><label class="pills"><span><input type="checkbox" ${E.cancel?"checked":""} onchange="E.cancel=this.checked"> Cancel</span></label><label>Reason<input value="${h(E.reason)}" oninput="E.reason=this.value"></label></div>
+  <div class="row" style="margin-top:12px"><button class="p" onclick="saveE()">Save</button><button onclick="clrE()">Reset to automatic</button><button onclick="$('#dlg').close()">Close</button></div>`;
+  $("#dlg").innerHTML=body;
+}
+const mt=id=>{const i=E.merge.indexOf(id);i<0?E.merge.push(id):E.merge.splice(i,1);drawE()};
+function rmMerge(){if(!confirm("Remove this merge?"))return;db.merges=db.merges.filter(x=>x.id!==E.mer.id);$("#dlg").close();persist();runGen()}
+function clrE(){delete db.manual[E.k];$("#dlg").close();persist();runGen()}
+function saveE(){
+  if(E.cancel)db.manual[E.k]={cancel:true,reason:E.reason||"Cancelled"};
+  else if(E.merge.length){if(!E.s||!E.f)return alert("Choose the subject and faculty for the merged class.");
+    db.merges.push({id:uid(),batchIds:[E.bid,...E.merge],subjectId:E.s,facultyId:E.f,from:E.ds,to:E.ds,days:[],tf:E.p.from,tt:E.p.to});delete db.manual[E.k]}
+  else if(E.s||E.f)db.manual[E.k]={subjectId:E.s,facultyId:E.f};else delete db.manual[E.k];
+  $("#dlg").close();persist();runGen();
+}
+function xls(id){const a=document.createElement("a");a.href=URL.createObjectURL(new Blob(["<html><body>"+$("#"+id).innerHTML+"</body></html>"],{type:"application/vnd.ms-excel"}));a.download="report.xls";a.click()}
+
+/* ===== reports ===== */
+const R={from:"",to:"",branch:"",batchIds:[],facIds:[],subId:"",kind:"fac"};let lastRep="";
+const rtg=(k,id)=>{const a=R[k],i=a.indexOf(id);i<0?a.push(id):a.splice(i,1)};
+const fnm=r=>nm("faculty",r.fid),bnm=r=>nm("batches",r.bid),snm=r=>nm("subjects",r.sid);
+const KINDS={fac:["Faculty-wise summary",["Faculty"],r=>[fnm(r)]],facDate:["Faculty-wise, date-wise",["Faculty","Date"],r=>[fnm(r),r.ds]],facBatch:["Faculty-wise, batch-wise",["Faculty","Batch"],r=>[fnm(r),bnm(r)]],facBatchDate:["Faculty-wise, batch-wise, date-wise",["Faculty","Batch","Date"],r=>[fnm(r),bnm(r),r.ds]],
+  week:["Weekly (Mon-Sun), faculty-wise",["Week starting","Faculty"],r=>[wk(r.ds),fnm(r)]],weekBatch:["Weekly, batch-wise",["Week starting","Batch"],r=>[wk(r.ds),bnm(r)]],weekSub:["Weekly, subject-wise",["Week starting","Subject"],r=>[wk(r.ds),snm(r)]],
+  batch:["Batch-wise summary",["Batch"],r=>[bnm(r)]],subj:["Subject-wise summary",["Subject"],r=>[snm(r)]],subFac:["Subject-wise, faculty-wise",["Subject","Faculty"],r=>[snm(r),fnm(r)]],all:["Overall list (every class)",[],r=>[]]};
+function repData(){
+  const bl=db.batches.filter(b=>(!R.branch||b.branchId===R.branch)&&(!R.batchIds.length||R.batchIds.includes(b.id)));
+  return build(R.from,R.to,new Set(bl.map(b=>b.id))).recs.filter(r=>(!R.facIds.length||R.facIds.includes(r.fid))&&(!R.subId||r.sid===R.subId));
+}
+function runRep(){
+  if(!R.from||!R.to||R.to<R.from)return alert("Choose a valid From and To date.");
+  const rs=repData(),K=KINDS[R.kind],lid=r=>r.ds+"|"+r.fid+"|"+r.from+"-"+r.to;let html="";
+  if(R.kind==="all"){
+    rs.sort((a,b)=>(a.ds+a.from).localeCompare(b.ds+b.from)||bnm(a).localeCompare(bnm(b)));
+    html=tbl(["Date","Day","Time","Batch","Subject","Faculty","Merged","Minutes"],rs.map(r=>[fd(r.ds),DN[r.dc],r.from+"-"+r.to,bnm(r),snm(r),fnm(r),r.merged?"Yes":"",r.mins].map(h)));
+  }else{
+    const g=new Map(),tot=new Set();let tm=0;
+    for(const r of rs){const c=K[2](r),k=c.join("\u0001");if(!g.has(k))g.set(k,{c,ids:new Set(),m:0,f:new Set(),b:new Set()});const x=g.get(k),l=lid(r);
+      if(!x.ids.has(l)){x.ids.add(l);x.m+=r.mins}x.f.add(fnm(r));x.b.add(bnm(r));if(!tot.has(l)){tot.add(l);tm+=r.mins}}
+    const hasF=K[1].includes("Faculty"),hasB=K[1].includes("Batch"),ex=[];if(!hasF)ex.push("Faculty");if(!hasB)ex.push("Batches");
+    const list=[...g.values()].sort((a,b)=>a.c.join("|").localeCompare(b.c.join("|")));
+    const row=x=>[...x.c.map(fd),x.ids.size,hm(x.m)].concat(!hasF?[[...x.f].sort().join(", ")]:[],!hasB?[[...x.b].sort().join(", ")]:[]).map(h);
+    const tr=[...K[1].map((_,i)=>i?"":"Total (unique lectures)"),tot.size,hm(tm)].concat(ex.map(()=>"")).map(h);
+    html=tbl([...K[1],"Lectures","Time",...ex],[...list.map(row),tr.map(c=>c?`<b>${c}</b>`:"")]);
+  }
+  lastRep=`<h2>${K[0]}: ${fd(R.from)} to ${fd(R.to)}</h2>`+(rs.length?html:'<p class="mut">No classes found for these filters.</p>');render();
+}
+V.reports=function(){
+  const bo=bOpts().filter(b=>!R.branch||b.branchId===R.branch);
+  return card("Reports",`<div class="row noprint"><label>From<input type="date" value="${R.from}" oninput="R.from=this.value"></label><label>To<input type="date" value="${R.to}" oninput="R.to=this.value"></label>
+  <label>Report<select onchange="R.kind=this.value">${Object.entries(KINDS).map(([k,v])=>`<option value="${k}" ${R.kind===k?"selected":""}>${v[0]}</option>`).join("")}</select></label>
+  <label>Branch<select onchange="R.branch=this.value;R.batchIds=[];render()"><option value="">All</option>${db.branches.map(b=>`<option value="${b.id}" ${R.branch===b.id?"selected":""}>${h(b.name)}</option>`).join("")}</select></label>
+  <label>Subject<select onchange="R.subId=this.value"><option value="">All</option>${db.subjects.map(b=>`<option value="${b.id}" ${R.subId===b.id?"selected":""}>${h(b.name)}</option>`).join("")}</select></label>
+  <button class="p" onclick="runRep()">Show report</button><button onclick="print()">Print / PDF</button><button onclick="xls('rout')">Excel</button></div>
+  <div class="noprint" style="margin-top:8px"><div class="mut" style="font-size:12px">Batch filter (none ticked = all)</div><div class="pills">${bo.map(b=>`<label><input type="checkbox" ${R.batchIds.includes(b.id)?"checked":""} onchange="rtg('batchIds','${b.id}')">${h(b.name)}</label>`).join("")}</div>
+  <div class="mut" style="font-size:12px;margin-top:6px">Faculty filter (none ticked = all)</div><div class="pills">${db.faculty.map(f=>`<label><input type="checkbox" ${R.facIds.includes(f.id)?"checked":""} onchange="rtg('facIds','${f.id}')">${h(f.name)}</label>`).join("")}</div></div>
+  <p class="mut noprint">Reports use the same timetable the Generator makes, including merges, cancellations, leave, exams and no-class days. A merged class counts as one lecture for the faculty.</p>`)+`<div class="card" id="rout">${lastRep||'<p class="mut">Choose dates and a report, then press Show report.</p>'}</div>`};
+start();
+</script></body></html>
